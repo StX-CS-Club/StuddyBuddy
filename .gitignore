@@ -1,2 +1,3 @@
 .idea
-studdy_buddy_app/assets/jsonData/open_ai.json
+studdy_buddy_app/assets/json_data/anthropic.json
+studdy_buddy_app/assets/json_data/supabase.json
