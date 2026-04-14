@@ -17,6 +17,10 @@ class Account {
         role: json['role']);
   }
 
+  static Set<Account> fromList(List<Map<String, dynamic>> list) {
+    return list.map((m) => Account.fromJson(m)).toSet();
+  }
+
   @override
   bool operator ==(Object other) => other is Account && other.id == id;
 

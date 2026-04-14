@@ -1,9 +1,9 @@
-import 'package:studdy_buddy_app/backend/assignment.dart';
-import 'package:studdy_buddy_app/backend/message.dart';
+import 'package:studdy_buddy_app/backend/data/assignment.dart';
+import 'package:studdy_buddy_app/backend/files/app_file.dart';
+import 'package:studdy_buddy_app/backend/data/message.dart';
 import 'package:studdy_buddy_app/backend/supabase/supabase_db.dart';
-import 'package:studdy_buddy_app/backend/supabase/supabase_file.dart';
 
-import 'anthropic/study_engine.dart';
+import '../anthropic/study_engine.dart';
 
 class Sandbox {
   final String id;
@@ -12,6 +12,7 @@ class Sandbox {
   final String user;
   final String? instructions;
   final Set<String> messageIds;
+  final DateTime? submissionDate;
   late List<Message> messages;
 
   final Map<String, String> attachments = {};
@@ -21,6 +22,7 @@ class Sandbox {
         required this.assignmentId,
         required this.user,
         this.instructions,
+        this.submissionDate,
         this.messageIds = const {}});
 
   factory Sandbox.fromJson(Map<String, dynamic> json) {
@@ -28,6 +30,7 @@ class Sandbox {
         id: json['id'],
         assignmentId: json['assignment'],
         user: json['user'],
+        submissionDate: DateTime.tryParse(json['submission_date'] ?? ""),
         instructions: json['instructions']);
   }
 
@@ -81,7 +84,7 @@ class Sandbox {
 
     final Map<String, dynamic> first = claudeMessages.first;
     final List<Map<String, dynamic>> fileBlocks = fileIds.entries.map((e) {
-      final String mimeType = SupabaseFile.extensionToMime(e.key.split('.').last);
+      final String mimeType = AppFile.extensionToMime(e.key.split('.').last);
       return StudyEngine.fileBlock(e.value, mimeType);
     }).toList();
 

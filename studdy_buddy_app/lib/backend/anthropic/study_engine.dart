@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:studdy_buddy_app/backend/supabase/supabase_file.dart';
+import 'package:studdy_buddy_app/backend/files/app_file.dart';
 
 class StudyEngine {
   static const String _claudeApiUrl = 'https://api.anthropic.com/v1/messages';
@@ -16,14 +16,18 @@ class StudyEngine {
   static late String model;
   static late Map<String, dynamic> defaultParams;
 
-  static Future<void> loadFromFile(String path) async {
-    final File file = File(path);
-    if (!await file.exists()) throw Exception('Config file not found: $path');
+  static bool _initialized = false;
+  static bool get initialized => _initialized;
+
+  static Future<void> init() async {
+    final String jsonString =
+        await rootBundle.loadString("assets/json_data/anthropic.json");
     final Map<String, dynamic> jsonMap =
-        Map<String, dynamic>.from(jsonDecode(await file.readAsString()));
+        Map<String, dynamic>.from(jsonDecode(jsonString));
     apiKey = jsonMap['api_key'];
     model = jsonMap['model'];
     defaultParams = Map<String, dynamic>.from(jsonMap['params']);
+    _initialized = true;
   }
 
   // ---------------------------------------------------------------------------
@@ -257,12 +261,12 @@ class StudyEngine {
   }
 
   static Future<Map<String, String>> uploadSupabaseFiles(
-      List<SupabaseFile> files) async {
+      List<AppFile> files) async {
     final Map<String, String> result = {};
 
     await Future.wait(files.map((f) async {
       try {
-        final http.Response fileResponse = await http.get(Uri.parse(f.url));
+        final http.Response fileResponse = await http.get(Uri.parse(f.url ?? ""));
         final String? fileId = await uploadBytes(
           bytes: fileResponse.bodyBytes,
           fileName: f.fileName,

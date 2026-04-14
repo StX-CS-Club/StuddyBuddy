@@ -1,7 +1,7 @@
-import 'package:studdy_buddy_app/backend/sandbox.dart';
-import 'package:studdy_buddy_app/backend/supabase/supabase_file.dart';
+import 'package:studdy_buddy_app/backend/files/app_file.dart';
+import 'package:studdy_buddy_app/backend/data/sandbox.dart';
 
-import 'anthropic/study_engine.dart';
+import '../anthropic/study_engine.dart';
 
 enum Source { user, assistant }
 
@@ -43,7 +43,7 @@ class Message {
 
     final List<Map<String, dynamic>> contentBlocks = [
       ...fileIds.entries.map((e) {
-        final String mimeType = SupabaseFile.extensionToMime(e.key.split('.').last);
+        final String mimeType = AppFile.extensionToMime(e.key.split('.').last);
         return StudyEngine.fileBlock(e.value, mimeType);
       }),
       StudyEngine.textBlock(content),

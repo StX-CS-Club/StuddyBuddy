@@ -1,32 +1,46 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:studdy_buddy_app/backend/anthropic/study_engine.dart';
-import 'package:studdy_buddy_app/backend/assignment.dart';
-import 'package:studdy_buddy_app/backend/classroom.dart';
-import 'package:studdy_buddy_app/backend/supabase/supabase_file.dart';
+import 'package:studdy_buddy_app/backend/data/assignment.dart';
+import 'package:studdy_buddy_app/backend/data/classroom.dart';
+import 'package:studdy_buddy_app/backend/files/app_file.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../account.dart';
-import '../message.dart';
-import '../sandbox.dart';
+import '../data/account.dart';
+import '../data/message.dart';
+import '../data/sandbox.dart';
 
 class SupabaseDB {
   static late SupabaseClient _supabase;
+  static bool _initialized = false;
 
-  static Future<void> loadFromFile(String path) async {
-    final file = File(path);
-    if (!await file.exists()) throw Exception('Config file not found: $path');
+  static bool get initialized => _initialized;
 
-    final jsonMap =
-        jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+  static Future<void> init() async {
+    final String jsonString =
+        await rootBundle.loadString("assets/json_data/supabase.json");
+    final Map<String, dynamic> jsonMap =
+        Map<String, dynamic>.from(jsonDecode(jsonString));
 
     final String url = jsonMap["url"] as String;
     final String key = jsonMap["api_key"] as String;
     _supabase = (await Supabase.initialize(url: url, anonKey: key)).client;
+    _initialized = true;
+  }
+
+  static bool authenticated() {
+    return _supabase.auth.currentUser?.id != null;
+  }
+
+  static Future<void> fetchData() async {
+    await readAccount();
+    await readClassrooms();
   }
 
   static Account? account;
+  static final Set<Account> accounts = {};
   static final List<Classroom> classrooms = [];
   static final List<Assignment> assignments = [];
   static final List<Sandbox> sandboxes = [];
@@ -65,6 +79,15 @@ class SupabaseDB {
     return account!;
   }
 
+  static Future<Set<Account>> readAccounts(List<String> ids) async {
+    if (account?.id == null) return {};
+    final List<Map<String, dynamic>> res =
+        await _supabase.from("account").select().inFilter("id", ids);
+    final Set<Account> parsedRes = Account.fromList(res);
+    accounts.addAll(parsedRes);
+    return parsedRes;
+  }
+
   static Future<void> writeAccount({String? name, String? role}) async {
     if (account?.id == null) return;
     final Map<String, String?> data = {"name": name, "role": role}
@@ -78,29 +101,37 @@ class SupabaseDB {
   }
 
   static Future<bool> createClassroom(
-      {required String name, String? syllabus}) async {
+      {required String name,
+      String? syllabus,
+      String? emoji,
+      String? color}) async {
     if (account?.role?.toLowerCase() != "teacher") {
       return false;
     }
-    final List<Map<String, dynamic>> result = await _supabase
-        .from('classroom')
-        .insert({
+    final List<Map<String, dynamic>> res =
+        await _supabase.from('classroom').insert({
       "name": name,
       "syllabus": syllabus,
+      "color": color,
+      "emoji": emoji,
       "teacher": account?.id
     }).select();
-    if (result.isEmpty) return false;
-    await joinClassroom(result.first["id"]);
+    if (res.isEmpty) return false;
+    classrooms.add(Classroom.fromJson(res.first));
     return true;
   }
 
   static Future<bool> writeClassroom(String id,
-      {String? name, String? syllabus}) async {
+      {String? name, String? syllabus, String? emoji, String? color}) async {
     if (account?.role?.toLowerCase() != "teacher") {
       return false;
     }
-    final Map<String, dynamic> data = {"name": name, "syllabus": syllabus}
-      ..removeWhere((_, v) => v == null);
+    final Map<String, dynamic> data = {
+      "name": name,
+      "syllabus": syllabus,
+      "color": color,
+      "emoji": emoji
+    }..removeWhere((_, v) => v == null);
     final List<Map<String, dynamic>> res =
         await _supabase.from('classroom').update(data).eq("id", id).select();
     if (res.isEmpty) return false;
@@ -121,27 +152,69 @@ class SupabaseDB {
     return classrooms;
   }
 
-  static Future<bool> createAssignment(
+  static Future<Assignment?> createAssignment(
       {required String classroomId,
-      required String title,
-      String? pdfUrl,
-      String? instructions}) async {
-    if (account?.role?.toLowerCase() != "teacher" ||
-        classrooms.where((c) => c.id == classroomId).isEmpty) {
-      return false;
+        required String title,
+        String? instructions}) async {
+    print('🟡 createAssignment called');
+    print('  classroomId: $classroomId');
+    print('  title: $title');
+    print('  account: ${account?.id}');
+    print('  account role: ${account?.role}');
+    print('  classrooms: ${classrooms.map((c) => c.id).toList()}');
+
+    if (account?.role?.toLowerCase() != "teacher") {
+      print('❌ blocked: account role is not teacher (role=${account?.role})');
+      return null;
     }
+
+    if (classrooms.where((c) => c.id == classroomId).isEmpty) {
+      print('❌ blocked: classroomId $classroomId not found in local classrooms');
+      return null;
+    }
+
+    print('✅ passed checks, inserting...');
+
     final Map<String, dynamic> data = {
       "classroom": classroomId,
       "title": title,
-      "pdf_url": pdfUrl,
       "instructions": instructions
     }..removeWhere((_, v) => v == null);
 
-    final List<Map<String, dynamic>> res =
-        await _supabase.from("assignment").insert(data).select();
-    if (res.isEmpty) return false;
-    await readClassrooms();
-    return true;
+    print('  data: $data');
+
+    try {
+      final List<Map<String, dynamic>> debugRes = await _supabase
+          .from('classroom')
+          .select()
+          .eq('id', classroomId);
+      print('🔍 classroom from db: $debugRes');
+
+      final String? uid = _supabase.auth.currentUser?.id;
+      print('🔍 auth.uid(): $uid');
+
+      print('🔍 session: ${_supabase.auth.currentSession}');
+      print('🔍 access token: ${_supabase.auth.currentSession?.accessToken}');
+
+      final List<Map<String, dynamic>> res =
+      await _supabase.from("assignment").insert(data).select();
+      print('  res: $res');
+      if (res.isEmpty) {
+        print('❌ insert returned empty');
+        return null;
+      }
+      final Assignment parsedRes = Assignment.fromJson(res.first);
+      assignments.add(parsedRes);
+      classrooms
+          .firstWhere((c) => c.id == classroomId)
+          .assignmentIds
+          .add(parsedRes.id);
+      print('✅ assignment created: ${parsedRes.id}');
+      return parsedRes;
+    } catch (e) {
+      print('❌ exception during insert: $e');
+      return null;
+    }
   }
 
   static Future<bool> writeAssignment(String id,
@@ -167,7 +240,7 @@ class SupabaseDB {
     return true;
   }
 
-  static Future<SupabaseFile?> uploadAssignmentFile(
+  static Future<AppFile?> uploadAssignmentFile(
       {required String assignmentId,
       required File file,
       String? mimeType}) async {
@@ -175,7 +248,7 @@ class SupabaseDB {
         classrooms
             .where((c) =>
                 c.assignmentIds.contains(assignmentId) &&
-                c.teacher == account?.id)
+                c.teacherId == account?.id)
             .isEmpty) {
       return null;
     }
@@ -185,7 +258,7 @@ class SupabaseDB {
     await _supabase.storage.from("assignment").upload(filePath, file,
         fileOptions: FileOptions(contentType: mimeType, upsert: true));
 
-    final SupabaseFile supabaseFile = SupabaseFile(
+    final AppFile supabaseFile = AppFile.fromUrl(
         url: await _supabase.storage
             .from("assignment")
             .createSignedUrl(filePath, 3600),
@@ -202,8 +275,7 @@ class SupabaseDB {
     return supabaseFile;
   }
 
-  static Future<List<SupabaseFile>> readAssignmentFiles(
-      String assignmentId) async {
+  static Future<List<AppFile>> readAssignmentFiles(String assignmentId) async {
     final List<FileObject> files =
         await _supabase.storage.from('assignment').list(path: assignmentId);
     final List<String> fileUrls = await Future.wait(files.map((f) async =>
@@ -212,7 +284,7 @@ class SupabaseDB {
             .createSignedUrl('$assignmentId/${f.name}', 3600)));
 
     return List.generate(files.length,
-        (i) => SupabaseFile(url: fileUrls[i], fileName: files[i].name));
+        (i) => AppFile.fromUrl(url: fileUrls[i], fileName: files[i].name));
   }
 
   static Future<List<Assignment>> readAssignments({Set<String>? ids}) async {
@@ -278,9 +350,11 @@ class SupabaseDB {
     return result;
   }
 
-  static Future<SupabaseFile?> uploadSandboxFile(
+  static Future<AppFile?> uploadSandboxFile(
       {required String sandboxId, required File file, String? mimeType}) async {
-    if (sandboxes.where((s) => s.user == account?.id && s.id == sandboxId).isEmpty) {
+    if (sandboxes
+        .where((s) => s.user == account?.id && s.id == sandboxId)
+        .isEmpty) {
       return null;
     }
 
@@ -289,7 +363,7 @@ class SupabaseDB {
     await _supabase.storage.from("sandbox").upload(filePath, file,
         fileOptions: FileOptions(contentType: mimeType, upsert: true));
 
-    final SupabaseFile supabaseFile = SupabaseFile(
+    final AppFile supabaseFile = AppFile.fromUrl(
         url: await _supabase.storage
             .from("sandbox")
             .createSignedUrl(filePath, 3600),
@@ -304,6 +378,33 @@ class SupabaseDB {
     return supabaseFile;
   }
 
+  static Future<AppFile?> uploadSubmissionFile(
+      {required String sandboxId, required File file, String? mimeType}) async {
+    if (sandboxes
+        .where((s) => s.user == account?.id && s.id == sandboxId)
+        .isEmpty) {
+      return null;
+    }
+
+    final String filePath = "$sandboxId/${file.uri.pathSegments.last}";
+
+    await _supabase.storage.from("submission").upload(filePath, file,
+        fileOptions: FileOptions(contentType: mimeType, upsert: true));
+
+    final AppFile supabaseFile = AppFile.fromUrl(
+        url: await _supabase.storage
+            .from("submission")
+            .createSignedUrl(filePath, 3600),
+        fileName: filePath.split("/").last);
+
+    await _supabase
+        .from('sandbox')
+        .update({"submission_date": DateTime.now().toIso8601String()}).eq(
+            "id", sandboxId);
+
+    return supabaseFile;
+  }
+
   static Future<List<Sandbox>> readSandboxes({Set<String>? ids}) async {
     if (account?.id == null) return [];
     late List<Map<String, dynamic>> res;
@@ -313,7 +414,7 @@ class SupabaseDB {
     } else if (account?.role?.toLowerCase() == "teacher") {
       final Set<String> assignmentIds = {};
       for (Classroom classroom in classrooms) {
-        if (classroom.teacher == account?.id) {
+        if (classroom.teacherId == account?.id) {
           assignmentIds.addAll(classroom.assignmentIds);
         }
       }
@@ -339,7 +440,7 @@ class SupabaseDB {
             classrooms
                 .where((c) =>
                     c.assignmentIds.contains(sandbox.assignmentId) &&
-                    c.teacher == account?.id)
+                    c.teacherId == account?.id)
                 .isEmpty) {
       return [];
     }
@@ -352,7 +453,7 @@ class SupabaseDB {
       {required String sandboxId,
       required String role,
       required String content,
-        Map<String, String>? fileIds,
+      Map<String, String>? fileIds,
       DateTime? createdAt}) async {
     if (account?.id == null ||
         sandboxes.where((s) => s.id == sandboxId).isEmpty) {
